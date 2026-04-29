@@ -109,7 +109,7 @@
 ### 4.2 タイムスタンプ運用
 
 - `created_at` / `updated_at` は **Rust側でセット**する
-- 形式：**UTC ISO8601 文字列**（例：`2026-04-26T12:34:56Z`）
+- 形式：**UTC ISO8601 文字列**（例：`2026-04-26T12:34:56.789Z`）
 - SQLiteのDEFAULTやトリガーには依存しない（テスト容易性のため）
 
 ### 4.3 並び順（sort_order）の採番ルール
@@ -263,6 +263,7 @@ pages
   - fetched_at          TEXT
   - created_at          TEXT NOT NULL
   - updated_at          TEXT NOT NULL
+  - UNIQUE(work_id, source_type, source_url) WHERE source_url IS NOT NULL
 
 -- お気に入り ★新規
 favorites
@@ -275,7 +276,8 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
   title,
   content_text,
   content='pages',
-  content_rowid='id'
+  content_rowid='id',
+  tokenize='trigram'
 );
 ```
 
@@ -406,7 +408,7 @@ CREATE VIRTUAL TABLE pages_fts USING fts5(
 | Phase 7 | 目次ページから一括取得 | 自動化 |
 | Phase 8 | Wayback特有URL対応・`canonical_url`/`archived_at` 追加 | アーカイブ対応 |
 | Phase 9 | 残りの文字コード対応（euc-jp 等） | 古いサイト対応 |
-| Phase 10 | エクスポート・バックアップ | 将来対応 |
+| Phase 10 | エクスポート・バックアップ・設定画面 | MVPではページ本文のテキスト出力、SQLite DBバックアップ、重複URL診断、リーダーフォントサイズ設定に対応 |
 
 ※お気に入り機能は実装が軽量なため、Phase 5 完了後すぐに投入できる。Phase 2 完了時点でも投入可能だが、検索機能との UI 統合を考慮して Phase 6.5 に配置。
 
@@ -447,8 +449,8 @@ DBレコードを作成 → 相対パスでHTMLを保存
 - [ ] `link_url_pattern` の具体的な書式（正規表現 or テンプレート文字列）
 - [ ] 画像の扱い（小説中の挿絵など）
 - [ ] 誤削除対策（将来的に `deleted_at` による論理削除を検討）
-- [ ] エクスポート機能（テキスト出力など）の要否
-- [ ] アプリ全体のグローバル設定保存先（`app_settings` テーブル or 設定ファイル）
+- [x] エクスポート機能（テキスト出力など）の要否 → MVPでは選択中ページの本文を `.txt` 出力する
+- [x] アプリ全体のグローバル設定保存先（`app_settings` テーブル or 設定ファイル） → MVPではリーダー表示設定を `localStorage` に保存し、DB同期が必要な設定は後続で再検討する
 - [ ] マイグレーションツールの選定（refinery / sqlx-migrate 等）
 - [ ] お気に入り機能の将来拡張（複数リスト・メモ・タグ）の要否
 

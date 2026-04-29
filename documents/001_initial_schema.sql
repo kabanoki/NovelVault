@@ -4,17 +4,6 @@
 -- 対応要件定義: v4.2
 -- =============================================================================
 
--- -----------------------------------------------------------------------------
--- 基本設定
--- -----------------------------------------------------------------------------
-
--- 外部キー制約を有効化（SQLiteはデフォルト無効のため必須）
-PRAGMA foreign_keys = ON;
-
--- WALモードで並行読み取り性能を向上
-PRAGMA journal_mode = WAL;
-
-
 -- =============================================================================
 -- テーブル定義
 -- =============================================================================
@@ -26,7 +15,7 @@ CREATE TABLE IF NOT EXISTS sites (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   name        TEXT    NOT NULL,
   base_url    TEXT    NOT NULL,
-  created_at  TEXT    NOT NULL,  -- UTC ISO8601 例: 2026-04-26T12:34:56Z
+  created_at  TEXT    NOT NULL,  -- UTC ISO8601 例: 2026-04-26T12:34:56.789Z
   updated_at  TEXT    NOT NULL
 );
 
@@ -113,6 +102,14 @@ CREATE TABLE IF NOT EXISTS pages (
 CREATE INDEX IF NOT EXISTS idx_works_site_sort
   ON works(site_id, sort_order);
 
+-- site_profiles: サイト配下のプロファイル一覧表示
+CREATE INDEX IF NOT EXISTS idx_site_profiles_site
+  ON site_profiles(site_id);
+
+-- works: プロファイル削除時の ON DELETE SET NULL 対象検索
+CREATE INDEX IF NOT EXISTS idx_works_site_profile
+  ON works(site_profile_id);
+
 -- pages: 作品配下のページ一覧表示（sort_order順）
 CREATE INDEX IF NOT EXISTS idx_pages_work_sort
   ON pages(work_id, sort_order);
@@ -120,6 +117,11 @@ CREATE INDEX IF NOT EXISTS idx_pages_work_sort
 -- pages: 重複チェック・再取得時の検索
 CREATE INDEX IF NOT EXISTS idx_pages_source_url
   ON pages(source_url);
+
+-- pages: 同一作品内で同じ取得元URLを重複登録しない
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pages_work_source_type_url
+  ON pages(work_id, source_type, source_url)
+  WHERE source_url IS NOT NULL;
 
 -- pages: 失敗ページの抽出・再取得対象の絞り込み
 CREATE INDEX IF NOT EXISTS idx_pages_fetch_status
@@ -138,7 +140,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   content_text,
   content     = 'pages',
   content_rowid = 'id',
-  tokenize    = 'unicode61'  -- 日本語も含めたUnicode対応トークナイザ
+  tokenize    = 'trigram'  -- 日本語本文の部分一致に対応
 );
 
 

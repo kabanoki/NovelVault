@@ -517,14 +517,14 @@ MVPでは最低限、`api/` 層のラッパーと `utils/` 内の関数にユニ
 | フェーズ | 実装するコンポーネント |
 |---------|--------------------|
 | Phase 1 | AppLayout / TopBar / Sidebar（空状態） / api/client / Zustand基盤 |
-| Phase 2 | SiteFormModal / WorkFormModal / PageFormModal / SearchBar / TitleSearchResults / ConfirmDialog |
+| Phase 2 | SiteFormModal / WorkFormModal / PageFormModal / SearchBar / TitleSearchResults / ConfirmDialog / row action buttons |
 | Phase 3 | FetchUrlModal / PageReader |
 | Phase 4 | （PageReader拡張・文字コード対応） |
 | Phase 5 | FullTextSearchResults |
 | Phase 6 | ProfileManagerView / ProfileEditor |
 | Phase 6.5 | FavoritesView / FavoriteToggle |
 | Phase 7 | FetchProgressView |
-| Phase 10 | SettingsView |
+| Phase 10 | SettingsView / readerSettings(localStorage) / export・backup API hooks |
 
 ---
 

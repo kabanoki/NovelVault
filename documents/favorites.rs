@@ -7,11 +7,11 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use crate::types::{CommandError, CommandResult};
-use crate::commands::DbState;
+use crate::db::DbState;
 
 // 現在時刻を UTC ISO8601 文字列で返す（commands.rs と同じ実装）
 fn now_utc() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 
@@ -102,36 +102,28 @@ pub struct FavoriteCheckResult {
 
 /// お気に入りに追加
 ///
-/// 既に登録済みのページを再登録しようとすると UNIQUE 制約違反でエラーになる。
-/// フロント側では favoriteCheck で事前確認するか、エラーをハンドリングする。
+/// 既に登録済みのページは重複登録せず、既存レコードを返す。
 #[tauri::command]
 pub fn favorite_add(
     db: State<DbState>,
     args: FavoriteAddArgs,
 ) -> CommandResult<Favorite> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.connection()?;
     let now = now_utc();
     conn.execute(
-        "INSERT INTO favorites (page_id, created_at) VALUES (?1, ?2)",
+        "INSERT INTO favorites (page_id, created_at) VALUES (?1, ?2)
+         ON CONFLICT(page_id) DO NOTHING",
         rusqlite::params![args.page_id, now],
-    ).map_err(|e| {
-        // UNIQUE 制約違反は専用のエラーコードで返す
-        if let rusqlite::Error::SqliteFailure(err, _) = &e {
-            if err.code == rusqlite::ErrorCode::ConstraintViolation {
-                return CommandError {
-                    code:    "ALREADY_FAVORITED".to_string(),
-                    message: "このページは既にお気に入り登録されています".to_string(),
-                };
-            }
-        }
-        CommandError::from(e)
-    })?;
-    let id = conn.last_insert_rowid();
-    Ok(Favorite {
-        id,
-        page_id:    args.page_id,
-        created_at: now,
-    })
+    )?;
+    conn.query_row(
+        "SELECT id, page_id, created_at FROM favorites WHERE page_id=?1",
+        rusqlite::params![args.page_id],
+        |row| Ok(Favorite {
+            id: row.get(0)?,
+            page_id: row.get(1)?,
+            created_at: row.get(2)?,
+        }),
+    ).map_err(CommandError::from)
 }
 
 /// お気に入りから削除
@@ -140,7 +132,7 @@ pub fn favorite_remove(
     db: State<DbState>,
     args: FavoriteRemoveArgs,
 ) -> CommandResult<()> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.connection()?;
     conn.execute(
         "DELETE FROM favorites WHERE page_id=?1",
         rusqlite::params![args.page_id],
@@ -154,7 +146,7 @@ pub fn favorite_check(
     db: State<DbState>,
     args: FavoriteCheckArgs,
 ) -> CommandResult<FavoriteCheckResult> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.connection()?;
     let result = conn.query_row(
         "SELECT id FROM favorites WHERE page_id=?1",
         rusqlite::params![args.page_id],
@@ -179,7 +171,7 @@ pub fn favorite_check(
 /// 並び順は sites.name → works.sort_order → pages.sort_order。
 #[tauri::command]
 pub fn favorite_list(db: State<DbState>) -> CommandResult<FavoritesGrouped> {
-    let conn = db.0.lock().unwrap();
+    let conn = db.connection()?;
     let mut stmt = conn.prepare(
         "SELECT
            f.id, f.created_at,
@@ -190,7 +182,7 @@ pub fn favorite_list(db: State<DbState>) -> CommandResult<FavoritesGrouped> {
          JOIN pages p ON f.page_id  = p.id
          JOIN works w ON p.work_id  = w.id
          JOIN sites s ON w.site_id  = s.id
-         ORDER BY s.name, w.sort_order, p.sort_order"
+         ORDER BY s.name COLLATE NOCASE, w.sort_order, p.sort_order, p.id"
     )?;
 
     let items = stmt.query_map([], |row| {

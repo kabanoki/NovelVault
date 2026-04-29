@@ -28,6 +28,14 @@
 | `fetch_storage_flow.md` | Rust 側 取得・保存処理フロー | 確定 |
 | `site_profile_spec.md` | サイトプロファイル JSON 仕様 | 確定 |
 
+### 試験
+
+| ファイル | 内容 | 状態 |
+|---------|------|------|
+| `test_unit.md` | 単体試験書（Rust純関数、24ケース） | 実施済み 24/24 PASS |
+| `test_integration.md` | 結合試験書（インメモリSQLite、29ケース） | 実施済み 29/29 PASS（`cargo test` 53テスト全PASS） |
+| `test_system.md` | 総合試験書（GUIアプリ手動確認、30ケース） | 未実施 |
+
 ---
 
 ## 開発フェーズ
@@ -44,7 +52,7 @@
 | 7 | 一括取得 | screen S-10, fetch_storage §8, site_profile §3 |
 | 8 | Wayback特有URL対応 | fetch_storage §4.1, requirements §3.1 |
 | 9 | 残りの文字コード対応 | fetch_storage §4.3 |
-| 10 | エクスポート・バックアップ・設定画面 | screen S-11 |
+| 10 | エクスポート・バックアップ・設定画面・重複URL診断 | screen S-11 |
 
 ---
 
@@ -109,7 +117,7 @@ requirements_v4.3.md           (頂点・全ドキュメントの根拠)
 - [ ] `link_url_pattern` の具体的な書式 → site_profile_spec で確定
 - [ ] 画像の扱い（小説中の挿絵など）
 - [ ] 誤削除対策（`deleted_at` による論理削除を将来検討）
-- [ ] エクスポート機能（テキスト出力など）の要否
-- [ ] アプリ全体のグローバル設定保存先（`app_settings` テーブル or 設定ファイル）
+- [x] エクスポート機能（テキスト出力など）の要否 → Phase 10 MVPでは選択中ページの本文を `.txt` 出力
+- [x] アプリ全体のグローバル設定保存先（`app_settings` テーブル or 設定ファイル） → Phase 10 MVPではリーダー表示設定を `localStorage` に保存
 - [ ] マイグレーションツールの選定（refinery / sqlx-migrate / 自前実装）
 - [ ] お気に入り機能の将来拡張（複数リスト・メモ・タグ）の要否
