@@ -37,10 +37,16 @@ pub fn favorite_add(db: State<DbState>, args: FavoritePageArgs) -> CommandResult
 #[tauri::command]
 pub fn favorite_remove(db: State<DbState>, args: FavoritePageArgs) -> CommandResult<()> {
     let conn = db.connection()?;
-    conn.execute(
+    let deleted = conn.execute(
         "DELETE FROM favorites WHERE page_id=?1",
         params![args.page_id],
     )?;
+    if deleted == 0 {
+        eprintln!(
+            "favorite_remove: no favorite row found for page_id={}",
+            args.page_id
+        );
+    }
     Ok(())
 }
 

@@ -8,10 +8,11 @@ use crate::{
     types::{BulkFetchByProfileArgs, BulkFetchResult, FetchPageByUrlArgs, Page},
 };
 use encoding_rs::Encoding;
+use regex::Regex;
 use rusqlite::{params, OptionalExtension};
 use scraper::{Html, Selector};
 use serde::Deserialize;
-use std::net::IpAddr;
+use std::{net::IpAddr, sync::OnceLock};
 use tauri::{AppHandle, Manager, State};
 
 const FETCH_ERROR_MAX_CHARS: usize = 1024;
@@ -711,8 +712,9 @@ pub(super) fn apply_link_template(template: &str, n: i64) -> CommandResult<Strin
     if template.contains("{n}") {
         return Ok(template.replace("{n}", &n.to_string()));
     }
-    let re = regex::Regex::new(r"\{n:(\d+)d\}")
-        .map_err(|e| CommandError::new("REGEX_ERROR", e.to_string()))?;
+    static LINK_TEMPLATE_RE: OnceLock<Regex> = OnceLock::new();
+    let re = LINK_TEMPLATE_RE
+        .get_or_init(|| Regex::new(r"\{n:(\d+)d\}").expect("valid link template regex"));
     if let Some(captures) = re.captures(template) {
         let width = captures
             .get(1)
