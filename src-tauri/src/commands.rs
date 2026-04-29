@@ -127,17 +127,61 @@ pub(super) fn wayback_metadata(
 }
 
 fn parse_wayback_url(url: &str) -> CommandResult<WaybackMetadata> {
-    let re = regex::Regex::new(r"web\.archive\.org/web/(\d{14})(?:[a-z_]+)?/(.+)$")
-        .map_err(|e| CommandError::new("REGEX_ERROR", e.to_string()))?;
-    let captures = re.captures(url).ok_or_else(|| {
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
         CommandError::new(
             "INVALID_WAYBACK_URL",
             "Wayback URLは /web/{timestamp}/{original_url} 形式である必要があります",
         )
     })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str() != Some("web.archive.org")
+    {
+        return Err(CommandError::new(
+            "INVALID_WAYBACK_URL",
+            "Wayback URLは web.archive.org のURLである必要があります",
+        ));
+    }
+
+    let rest = parsed.path().strip_prefix("/web/").ok_or_else(|| {
+        CommandError::new(
+            "INVALID_WAYBACK_URL",
+            "Wayback URLは /web/{timestamp}/{original_url} 形式である必要があります",
+        )
+    })?;
+    let (timestamp_with_flags, original_url) = rest.split_once('/').ok_or_else(|| {
+        CommandError::new(
+            "INVALID_WAYBACK_URL",
+            "Wayback URLは /web/{timestamp}/{original_url} 形式である必要があります",
+        )
+    })?;
+    if timestamp_with_flags.len() < 14 {
+        return Err(CommandError::new(
+            "INVALID_WAYBACK_URL",
+            "Wayback URLのタイムスタンプが不正です",
+        ));
+    }
+    let archived_at = &timestamp_with_flags[..14];
+    let flags = &timestamp_with_flags[14..];
+    if !archived_at.chars().all(|ch| ch.is_ascii_digit())
+        || !flags
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || original_url.is_empty()
+    {
+        return Err(CommandError::new(
+            "INVALID_WAYBACK_URL",
+            "Wayback URLの形式が不正です",
+        ));
+    }
+
+    let canonical_url = if let Some(query) = parsed.query() {
+        format!("{original_url}?{query}")
+    } else {
+        original_url.to_string()
+    };
+
     Ok(WaybackMetadata {
-        archived_at: captures.get(1).map(|value| value.as_str().to_string()),
-        canonical_url: captures.get(2).map(|value| value.as_str().to_string()),
+        archived_at: Some(archived_at.to_string()),
+        canonical_url: Some(canonical_url),
     })
 }
 

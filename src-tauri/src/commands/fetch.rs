@@ -11,7 +11,10 @@ use encoding_rs::Encoding;
 use rusqlite::{params, OptionalExtension};
 use scraper::{Html, Selector};
 use serde::Deserialize;
+use std::net::IpAddr;
 use tauri::{AppHandle, Manager, State};
+
+const FETCH_ERROR_MAX_CHARS: usize = 1024;
 
 #[tauri::command]
 pub async fn fetch_page_by_url(
@@ -20,13 +23,14 @@ pub async fn fetch_page_by_url(
     args: FetchPageByUrlArgs,
 ) -> CommandResult<Page> {
     validate_source_type(&args.source_type)?;
-    let wayback = wayback_metadata(Some(&args.url), &args.source_type)?;
-    let requested_encoding = normalize_requested_encoding(&args.encoding)?;
-
     let url = args.url.trim().to_string();
     if url.is_empty() {
         return Err(CommandError::new("VALIDATION_ERROR", "URLは必須です"));
     }
+    validate_fetch_url(&url)?;
+
+    let wayback = wayback_metadata(Some(&url), &args.source_type)?;
+    let requested_encoding = normalize_requested_encoding(&args.encoding)?;
 
     {
         let conn = db.connection()?;
@@ -57,7 +61,7 @@ pub async fn fetch_page_by_url(
         )?;
     }
 
-    let relative_html_path = match save_original_html(&app, &db, &page, &fetched.html) {
+    let relative_html_path = match save_original_html(&app, &db, &page, &fetched.raw_bytes) {
         Ok(relative_path) => relative_path,
         Err(error) => {
             let conn = db.connection()?;
@@ -198,6 +202,11 @@ pub async fn bulk_fetch_by_profile(
     let mut failed_count = 0;
 
     for link in links {
+        if validate_fetch_url(&link.url).is_err() {
+            failed_count += 1;
+            continue;
+        }
+
         let wayback = wayback_metadata(Some(&link.url), &source_type)?;
         let page_id = {
             let conn = db.connection()?;
@@ -249,13 +258,23 @@ pub async fn bulk_fetch_by_profile(
 }
 
 pub(super) struct FetchedHtml {
+    pub(super) raw_bytes: Vec<u8>,
     pub(super) html: String,
     pub(super) detected_encoding: String,
 }
 
 async fn fetch_html(url: &str, requested_encoding: &str) -> CommandResult<FetchedHtml> {
+    validate_fetch_url(url)?;
+
     let response = reqwest::Client::builder()
         .user_agent("NovelVault/0.1")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if validate_fetch_url(attempt.url().as_str()).is_ok() {
+                attempt.follow()
+            } else {
+                attempt.error("redirect target is not allowed")
+            }
+        }))
         .build()
         .map_err(|e| CommandError::new("FETCH_ERROR", e.to_string()))?
         .get(url)
@@ -280,7 +299,7 @@ async fn fetch_html(url: &str, requested_encoding: &str) -> CommandResult<Fetche
         .bytes()
         .await
         .map_err(|e| CommandError::new("FETCH_ERROR", e.to_string()))?;
-    decode_html(&bytes, requested_encoding, content_type.as_deref())
+    decode_html(bytes.as_ref(), requested_encoding, content_type.as_deref())
 }
 
 pub(super) fn decode_html(
@@ -301,9 +320,72 @@ pub(super) fn decode_html(
 
     let (decoded, _, _) = encoding.decode(bytes);
     Ok(FetchedHtml {
+        raw_bytes: bytes.to_vec(),
         html: decoded.into_owned(),
         detected_encoding: encoding.name().to_lowercase(),
     })
+}
+
+pub(super) fn validate_fetch_url(url: &str) -> CommandResult<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CommandError::new("VALIDATION_ERROR", format!("URLが不正です: {e}")))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "取得URLは http または https のみ対応しています",
+            ));
+        }
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CommandError::new("VALIDATION_ERROR", "取得URLにホストがありません"))?;
+    let lower_host = host.to_ascii_lowercase();
+    if lower_host == "localhost" || lower_host.ends_with(".localhost") {
+        return Err(CommandError::new(
+            "VALIDATION_ERROR",
+            "localhost への取得は許可されていません",
+        ));
+    }
+    let ip_host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = ip_host.parse::<IpAddr>() {
+        if is_disallowed_fetch_ip(ip) {
+            return Err(CommandError::new(
+                "VALIDATION_ERROR",
+                "ローカルまたはプライベートIPへの取得は許可されていません",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_disallowed_fetch_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+        }
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_disallowed_fetch_ip(IpAddr::V4(mapped));
+            }
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+        }
+    }
 }
 
 pub(super) fn detect_encoding(bytes: &[u8], content_type: Option<&str>) -> &'static Encoding {
@@ -467,6 +549,7 @@ fn update_fetch_failure(
     error: &str,
 ) -> CommandResult<()> {
     let now = now_utc();
+    let error = truncate_fetch_error(error);
     conn.execute(
         "UPDATE pages
          SET fetch_status=?1, fetch_error=?2, updated_at=?3
@@ -494,6 +577,7 @@ fn update_fetch_failure_with_html(
     update: FetchFailureUpdate<'_>,
 ) -> CommandResult<()> {
     let now = now_utc();
+    let error = truncate_fetch_error(update.error);
     conn.execute(
         "UPDATE pages
          SET source_url=?1,
@@ -517,7 +601,7 @@ fn update_fetch_failure_with_html(
             update.detected_encoding,
             update.content_html_path,
             update.status,
-            update.error,
+            error,
             now,
             now,
             page_id,
@@ -530,7 +614,7 @@ fn save_original_html(
     app: &AppHandle,
     db: &State<'_, DbState>,
     page: &Page,
-    html: &str,
+    html: &[u8],
 ) -> CommandResult<String> {
     let (site_id, work_id) = {
         let conn = db.connection()?;
@@ -547,6 +631,17 @@ fn save_original_html(
     }
     std::fs::write(full_path, html)?;
     Ok(relative_path)
+}
+
+pub(super) fn truncate_fetch_error(error: &str) -> String {
+    let mut truncated = error
+        .chars()
+        .take(FETCH_ERROR_MAX_CHARS)
+        .collect::<String>();
+    if error.chars().count() > FETCH_ERROR_MAX_CHARS {
+        truncated.push('…');
+    }
+    truncated
 }
 
 #[derive(Debug, Deserialize)]

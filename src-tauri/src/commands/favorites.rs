@@ -76,7 +76,7 @@ pub fn favorite_list(db: State<DbState>) -> CommandResult<FavoritesGrouped> {
          JOIN pages p ON f.page_id = p.id
          JOIN works w ON p.work_id = w.id
          JOIN sites s ON w.site_id = s.id
-         ORDER BY s.name COLLATE NOCASE, w.sort_order, p.sort_order",
+         ORDER BY s.name COLLATE NOCASE, s.id, w.sort_order, w.id, p.sort_order, p.id",
     )?;
     let items = stmt
         .query_map([], |row| {

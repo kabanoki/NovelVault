@@ -107,6 +107,8 @@ pub struct NormalizedUrl {
 }
 
 pub fn normalize_url(url: &str, hint: SourceType) -> Result<NormalizedUrl, Error> {
+    validate_fetch_url(url)?;
+
     match hint {
         SourceType::Wayback => parse_wayback_url(url),
         SourceType::Normal  => Ok(NormalizedUrl {
@@ -124,18 +126,37 @@ pub fn normalize_url(url: &str, hint: SourceType) -> Result<NormalizedUrl, Error
 ///   → タイムスタンプ: 20040604075856
 ///   → 元URL:        http://example.com/001.html
 fn parse_wayback_url(url: &str) -> Result<NormalizedUrl, Error> {
-    // /web/{timestamp}/{original_url} を正規表現で抽出
-    let re = regex::Regex::new(r"web\.archive\.org/web/(\d{14})/(.+)$").unwrap();
-    let caps = re.captures(url).ok_or(Error::InvalidWaybackUrl)?;
+    let parsed = Url::parse(url).map_err(|_| Error::InvalidWaybackUrl)?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str() != Some("web.archive.org")
+    {
+        return Err(Error::InvalidWaybackUrl);
+    }
+
+    // /web/{timestamp}{flags}/{original_url} を構造化して抽出する。
+    // 例: 20040604075856if_ のような Wayback 表示フラグも許容する。
+    let rest = parsed.path().strip_prefix("/web/").ok_or(Error::InvalidWaybackUrl)?;
+    let (timestamp_with_flags, original_url) =
+        rest.split_once('/').ok_or(Error::InvalidWaybackUrl)?;
+    if timestamp_with_flags.len() < 14 {
+        return Err(Error::InvalidWaybackUrl);
+    }
+    let archived_at = &timestamp_with_flags[..14];
+    let original_url = match parsed.query() {
+        Some(query) => format!("{original_url}?{query}"),
+        None => original_url.to_string(),
+    };
 
     Ok(NormalizedUrl {
         url: url.to_string(),
         source_type: SourceType::Wayback,
-        original_url: Some(caps[2].to_string()),
-        archived_at:  Some(caps[1].to_string()),
+        original_url: Some(original_url),
+        archived_at:  Some(archived_at.to_string()),
     })
 }
 ```
+
+`validate_fetch_url` は `http` / `https` のみを許可し、`localhost`、ループバック、プライベートIP、リンクローカルなどローカルネットワーク向けの取得を拒否する。
 
 ### 4.2 HTTP取得
 
@@ -153,6 +174,13 @@ pub async fn fetch(url: &str, options: &FetchOptions) -> Result<FetchResult, Err
     let client = reqwest::Client::builder()
         .user_agent(&options.user_agent)
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if validate_fetch_url(attempt.url().as_str()).is_ok() {
+                attempt.follow()
+            } else {
+                attempt.error("redirect target is not allowed")
+            }
+        }))
         .build()?;
 
     // リクエスト間隔を確保（前回リクエストからのウェイト）
@@ -210,6 +238,7 @@ impl RateLimiter {
 // commands/fetch.rs
 
 pub struct DecodeResult {
+    pub raw_bytes: Vec<u8>,   // 保存用。デコード前のレスポンス本文をそのまま保持
     pub html:      String,
     pub detected:  String,    // "utf-8" / "shift_jis" / "euc-jp"
 }
@@ -237,8 +266,9 @@ pub fn decode(
     }
 
     Ok(DecodeResult {
-        html:     cow.into_owned(),
-        detected: encoding.name().to_lowercase(),
+        raw_bytes: bytes.to_vec(),
+        html:      cow.into_owned(),
+        detected:  encoding.name().to_lowercase(),
     })
 }
 
@@ -351,11 +381,13 @@ fn normalize_whitespace(s: &str) -> String {
 | 本文抽出失敗 | `fetch_status='parse_failed'`, `content_html_path` と取得メタデータは保存する |
 | 取得・保存・抽出すべて成功 | `fetch_status='success'`, `content_text` と `content_html_path` を保存する |
 
+`fetch_error` はDB肥大化を避けるため、保存前に1024文字へ切り詰める。
+
 ```rust
 // commands/fetch.rs（概略）
 
 let fetched = fetch_html(&url, &requested_encoding).await?;
-let relative_html_path = save_original_html(&app, &db, &page, &fetched.html)?;
+let relative_html_path = save_original_html(&app, &db, &page, &fetched.raw_bytes)?;
 
 let extracted = match extract_page_content(
     &fetched.html,
@@ -402,7 +434,7 @@ pub fn save(
     page_id: i64,
     site_id: i64,
     work_id: i64,
-    html: &str,
+    html: &[u8],
 ) -> Result<String, Error> {
     let app_dir = paths::app_data_dir()?;
     let relative = format!(
@@ -424,10 +456,10 @@ pub fn save(
     Ok(relative)
 }
 
-pub fn load(relative_path: &str) -> Result<String, Error> {
+pub fn load(relative_path: &str) -> Result<Vec<u8>, Error> {
     let app_dir = paths::app_data_dir()?;
     let absolute = app_dir.join(relative_path);
-    Ok(std::fs::read_to_string(absolute)?)
+    Ok(std::fs::read(absolute)?)
 }
 
 pub fn delete(relative_path: &str) -> Result<(), Error> {

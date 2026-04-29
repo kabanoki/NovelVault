@@ -131,6 +131,31 @@ fn test_u05_parse_wayback_url_valid() {
     );
 }
 
+#[test]
+fn test_u05_parse_wayback_url_with_archive_flags() {
+    let result = parse_wayback_url(
+        "https://web.archive.org/web/20040604075856if_/http://example.com/001.html",
+    )
+    .unwrap();
+    assert_eq!(result.archived_at, Some("20040604075856".to_string()));
+    assert_eq!(
+        result.canonical_url,
+        Some("http://example.com/001.html".to_string())
+    );
+}
+
+#[test]
+fn test_u05_parse_wayback_url_preserves_original_query() {
+    let result = parse_wayback_url(
+        "https://web.archive.org/web/20040604075856/http://example.com/search?q=abc",
+    )
+    .unwrap();
+    assert_eq!(
+        result.canonical_url,
+        Some("http://example.com/search?q=abc".to_string())
+    );
+}
+
 // ── U-06: parse_wayback_url() 異常系 ─────────────────────────
 #[test]
 fn test_u06_parse_wayback_url_invalid() {
@@ -141,6 +166,12 @@ fn test_u06_parse_wayback_url_invalid() {
     let r2 = parse_wayback_url("https://web.archive.org/web/");
     assert!(r2.is_err());
     assert_eq!(r2.unwrap_err().code, "INVALID_WAYBACK_URL");
+
+    let r3 = parse_wayback_url(
+        "https://notweb.archive.org/web/20040604075856/http://example.com/001.html",
+    );
+    assert!(r3.is_err());
+    assert_eq!(r3.unwrap_err().code, "INVALID_WAYBACK_URL");
 }
 
 // ── U-07: charset_from_content_type() 正常系 ─────────────────
@@ -234,6 +265,44 @@ fn test_u13_normalize_encoding_unsupported() {
     let r = fetch::normalize_requested_encoding("iso-2022-jp");
     assert!(r.is_err());
     assert_eq!(r.unwrap_err().code, "UNSUPPORTED_ENCODING");
+}
+
+#[test]
+fn test_u13_validate_fetch_url_accepts_http_https() {
+    assert!(fetch::validate_fetch_url("https://example.com/a").is_ok());
+    assert!(fetch::validate_fetch_url("http://example.com/a").is_ok());
+}
+
+#[test]
+fn test_u13_validate_fetch_url_rejects_local_targets() {
+    for url in [
+        "file:///tmp/a.html",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://192.168.0.1/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+    ] {
+        let result = fetch::validate_fetch_url(url);
+        assert!(result.is_err(), "{url} should be rejected");
+        assert_eq!(result.unwrap_err().code, "VALIDATION_ERROR");
+    }
+}
+
+#[test]
+fn test_u13_decode_html_keeps_raw_bytes() {
+    let bytes = b"<html><body>abc</body></html>";
+    let result = fetch::decode_html(bytes, "utf-8", None).unwrap();
+    assert_eq!(result.raw_bytes, bytes);
+    assert_eq!(result.html, "<html><body>abc</body></html>");
+}
+
+#[test]
+fn test_u13_truncate_fetch_error_caps_length() {
+    let error = "a".repeat(1100);
+    let truncated = fetch::truncate_fetch_error(&error);
+    assert_eq!(truncated.chars().count(), 1025);
+    assert!(truncated.ends_with('…'));
 }
 
 // ── U-14: sanitize_filename() 特殊文字除去 ───────────────────
@@ -611,7 +680,7 @@ fn test_i15_favorite_list_grouped() {
              JOIN pages p ON f.page_id = p.id
              JOIN works w ON p.work_id = w.id
              JOIN sites s ON w.site_id = s.id
-             ORDER BY s.name COLLATE NOCASE, w.sort_order, p.sort_order",
+             ORDER BY s.name COLLATE NOCASE, s.id, w.sort_order, w.id, p.sort_order, p.id",
         )
         .unwrap();
     let items: Vec<FavoriteListItem> = stmt
